@@ -1,0 +1,80 @@
+@import url('https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600&family=Playfair+Display:ital,wght@0,400;0,600;1,400&display=swap');
+@import "tailwindcss";
+
+@theme {
+  --color-brand-green-primary: #1B7A36;
+  --color-brand-green-secondary: #4CAF67;
+  --color-brand-green-accent: #71C587;
+  --color-brand-gold-primary: #D9AB3B;
+  --color-brand-gold-secondary: #E8C35A;
+  --color-brand-bg: #F8F8F8;
+  --color-brand-text: #222222;
+
+  --font-sans: "Poppins", "Century Gothic", "Inter", sans-serif;
+  --font-mono: "JetBrains Mono", monospace;
+  --font-serif: "Playfair Display", serif;
+}
+
+html, body, #root {
+  background-color: #F8F8F8;
+  color: #222222;
+  font-family: var(--font-sans);
+  margin: 0;
+  padding: 0;
+  min-height: 100vh;
+  /* Smoother text rendering makes the headings feel lighter and less heavy */
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+}
+
+/* Custom scrollbar to keep layout clean */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: #f1f1f1;
+}
+::-webkit-scrollbar-thumb {
+  background: #c5c5c5;
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #1B7A36;
+}
+
+/* Brand wordmark font — drop your Balgin file at public/fonts/ (woff2/woff/ttf/otf).
+   Until then, it gracefully falls back to Poppins. */
+@font-face {
+  font-family: "Balgin";
+  src: url("/fonts/balgin.woff2") format("woff2"),
+       url("/fonts/balgin.woff") format("woff"),
+       url("/fonts/balgin.ttf") format("truetype"),
+       url("/fonts/balgin.otf") format("opentype");
+  font-display: swap;
+}
+
+.brand-font {
+  font-family: "Balgin", "Poppins", sans-serif;
+  font-style: normal;
+}
+
+/* Clean Minimalism Utilities */
+.serif {
+  font-family: "Georgia", "Playfair Display", serif;
+}
+
+.hero-gradient {
+  background: linear-gradient(135deg, #1B7A36 0%, #D9AB3B 100%) !important;
+}
+
+.card-shadow {
+  box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.05) !important;
+}
+
+.active-nav {
+  color: #1B7A36 !important;
+  border-top: 3px solid #1B7A36 !important;
+}
+

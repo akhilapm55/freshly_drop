@@ -1,0 +1,6 @@
+{
+  "name": "Freshly Drop",
+  "description": "Organic Fresh. Delivered Daily. Modern, Kerala-inspired farm-fresh grocery delivery service.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
