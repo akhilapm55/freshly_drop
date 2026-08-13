@@ -9,35 +9,25 @@ export default defineConfig(() => {
     plugins: [
       react(),
       tailwindcss(),
+      // Freshly Drop is maintained as a plain website — no "install app" prompt.
+      //
+      // The plugin is kept ONLY to clean up after the earlier PWA build:
+      //   manifest: false     removes the web app manifest, which is what made
+      //                       Chrome/Edge offer "Install app".
+      //   selfDestroying:true ships a service worker whose only job is to
+      //                       unregister any previously-installed one and delete
+      //                       its caches.
+      //
+      // Why not just delete this block: a browser that already registered the old
+      // service worker would keep serving its cached copy of the site, so those
+      // visitors would never see another update. The self-destroying worker
+      // releases them. Once the site has been live like this for a few weeks,
+      // this whole plugin entry can be removed.
       VitePWA({
-        registerType: 'autoUpdate',
-        injectRegister: 'auto', // registers the service worker for us
-        includeAssets: ['favicon.png', 'apple-touch-icon.png'],
-        manifest: {
-          name: 'Freshly Drop — Organic Delivery',
-          short_name: 'Freshly Drop',
-          description: 'Farm-fresh organic produce delivered to your door.',
-          theme_color: '#1B7A36',
-          background_color: '#F8F8F8',
-          display: 'standalone',
-          orientation: 'portrait',
-          start_url: '/',
-          scope: '/',
-          icons: [
-            {src: 'pwa-192x192.png', sizes: '192x192', type: 'image/png'},
-            {src: 'pwa-512x512.png', sizes: '512x512', type: 'image/png'},
-            {src: 'pwa-maskable-512x512.png', sizes: '512x512', type: 'image/png', purpose: 'maskable'},
-          ],
-        },
-        workbox: {
-          // Precache the app shell so it opens offline; API calls (Supabase,
-          // Google, OpenStreetMap) are a different origin and always hit the network.
-          globPatterns: ['**/*.{js,css,html,png,svg,woff2}'],
-          navigateFallback: '/index.html',
-          cleanupOutdatedCaches: true,
-          maximumFileSizeToCacheInBytes: 4 * 1024 * 1024,
-        },
-        devOptions: {enabled: false}, // test installability via `npm run build && npm run preview`
+        selfDestroying: true,
+        injectRegister: 'auto',
+        manifest: false,
+        devOptions: {enabled: false},
       }),
     ],
     resolve: {

@@ -5,7 +5,7 @@
  */
 import { createClient } from '@supabase/supabase-js';
 import { supabase } from './supabase';
-import { Product, Order, CartItem } from '../types';
+import { Product, Order, CartItem, SavedAddress } from '../types';
 
 // ---- Mappers ---------------------------------------------------------------
 
@@ -37,6 +37,7 @@ function mapOrder(row: any): Order {
       month: 'short',
       year: 'numeric',
     }),
+    createdAt: row.created_at,
     status: row.status,
     address: row.address,
     deliveryETA: row.delivery_eta,
@@ -288,5 +289,74 @@ export async function bulkUpdateOrderStatus(orderIds: string[], status: Order['s
     .from('orders')
     .update({ status })
     .in('id', orderIds);
+  if (error) throw error;
+}
+
+// ---- Saved addresses -------------------------------------------------------
+// Requires supabase/saved-addresses.sql. RLS restricts every row to its owner,
+// so these never need to filter by user_id explicitly on read.
+
+function mapSavedAddress(row: any): SavedAddress {
+  return {
+    id: row.id,
+    label: row.label,
+    address: row.address,
+    landmark: row.landmark ?? null,
+    lat: row.lat != null ? Number(row.lat) : null,
+    lng: row.lng != null ? Number(row.lng) : null,
+  };
+}
+
+export async function fetchSavedAddresses(): Promise<SavedAddress[]> {
+  const { data, error } = await supabase
+    .from('saved_addresses')
+    .select('*')
+    .order('created_at', { ascending: true });
+  if (error) throw error;
+  return (data ?? []).map(mapSavedAddress);
+}
+
+/**
+ * Create or replace the address stored under `label` for the current user.
+ * Saving "Home" twice updates the existing Home rather than adding a second one
+ * (enforced by the unique index on user_id + lower(label)).
+ */
+export async function upsertSavedAddress(input: {
+  label: string;
+  address: string;
+  landmark?: string;
+  lat?: number | null;
+  lng?: number | null;
+}): Promise<SavedAddress> {
+  const { data: auth } = await supabase.auth.getUser();
+  const userId = auth.user?.id;
+  if (!userId) throw new Error('Please sign in to save an address.');
+
+  const label = input.label.trim();
+  if (!label) throw new Error('Give this address a name, like Home or Office.');
+  if (!input.address.trim()) throw new Error('The address cannot be empty.');
+
+  // onConflict targets the unique index, so a repeat label overwrites in place.
+  const { data, error } = await supabase
+    .from('saved_addresses')
+    .upsert(
+      {
+        user_id: userId,
+        label,
+        address: input.address.trim(),
+        landmark: input.landmark?.trim() || null,
+        lat: input.lat ?? null,
+        lng: input.lng ?? null,
+      },
+      { onConflict: 'user_id,label' }
+    )
+    .select()
+    .single();
+  if (error) throw error;
+  return mapSavedAddress(data);
+}
+
+export async function deleteSavedAddress(id: string): Promise<void> {
+  const { error } = await supabase.from('saved_addresses').delete().eq('id', id);
   if (error) throw error;
 }

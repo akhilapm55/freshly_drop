@@ -203,18 +203,14 @@ export default function AdminDashboard({
     );
   };
 
-  // Calculate stats dynamically
+  // Calculate stats dynamically — real orders only. (These used to be padded
+  // with invented baselines of ₹24,890 / 142 orders, which made the dashboard
+  // report money the shop had not taken.)
   const stats = useMemo(() => {
-    // Base preloaded stats plus actual placed ones
-    const baseRevenue = 24890;
-    const baseOrdersCount = 142;
-    const baseProfit = 8710;
+    const totalRevenue = orders.reduce((sum, order) => sum + order.total, 0);
+    const totalOrders = orders.length;
 
-    const currentOrdersRevenue = orders.reduce((sum, order) => sum + order.total, 0);
-    const totalOrders = baseOrdersCount + orders.length;
-    const totalRevenue = baseRevenue + currentOrdersRevenue;
-    
-    // Profit margin estimated at 35%
+    // Rough margin assumption — not an accounting figure, labelled as an estimate.
     const totalProfit = Math.round(totalRevenue * 0.35);
 
     // Filter inventory statuses
@@ -256,18 +252,39 @@ export default function AdminDashboard({
     return Array.from(map.values()).sort((a, b) => a.name.localeCompare(b.name));
   }, [toPickOrders]);
 
-  // Chart data (Kerala weekly sales breakdown)
+  // Real sales for the last 7 days, grouped by day from the orders themselves.
+  // Days with no orders stay in the series as zeroes so the shape of the week
+  // is honest rather than compressed.
   const chartsData = useMemo(() => {
-    return [
-      { name: 'Mon', Sales: 3400, Profit: 1190, Deliveries: 22 },
-      { name: 'Tue', Sales: 4100, Profit: 1435, Deliveries: 28 },
-      { name: 'Wed', Sales: 4900, Profit: 1715, Deliveries: 34 },
-      { name: 'Thu', Sales: 4200, Profit: 1470, Deliveries: 29 },
-      { name: 'Fri', Sales: 5800, Profit: 2030, Deliveries: 41 },
-      { name: 'Sat', Sales: 7200, Profit: 2520, Deliveries: 53 },
-      { name: 'Sun', Sales: 8100, Profit: 2835, Deliveries: 62 },
-    ];
-  }, []);
+    const days: { name: string; key: string; Sales: number; Profit: number; Deliveries: number }[] = [];
+    const today = new Date();
+    for (let i = 6; i >= 0; i--) {
+      const d = new Date(today);
+      d.setDate(today.getDate() - i);
+      days.push({
+        name: d.toLocaleDateString('en-IN', { weekday: 'short' }),
+        key: d.toDateString(),
+        Sales: 0,
+        Profit: 0,
+        Deliveries: 0,
+      });
+    }
+
+    const byKey = new Map(days.map((d) => [d.key, d]));
+    orders.forEach((order) => {
+      if (!order.createdAt) return;
+      const bucket = byKey.get(new Date(order.createdAt).toDateString());
+      if (!bucket) return; // older than 7 days
+      bucket.Sales += order.total;
+      bucket.Deliveries += 1;
+    });
+
+    days.forEach((d) => {
+      d.Sales = Math.round(d.Sales);
+      d.Profit = Math.round(d.Sales * 0.35); // same estimate as the stats card
+    });
+    return days;
+  }, [orders]);
 
   const handleStartEditStock = (product: Product) => {
     setEditingStockId(product.id);
@@ -341,8 +358,8 @@ export default function AdminDashboard({
           </div>
           <div className="mt-4">
             <h3 className="text-xl font-semibold text-[#222222]">₹{stats.revenue.toLocaleString()}</h3>
-            <span className="text-[10px] text-emerald-600 font-bold flex items-center gap-1 mt-1">
-              <TrendingUp className="w-3 h-3" /> +18.4% this week
+            <span className="text-[10px] text-gray-400 font-semibold block mt-1">
+              Across all orders placed
             </span>
           </div>
         </div>
@@ -357,8 +374,8 @@ export default function AdminDashboard({
           </div>
           <div className="mt-4">
             <h3 className="text-xl font-semibold text-[#222222]">{stats.orders}</h3>
-            <span className="text-[10px] text-emerald-600 font-bold flex items-center gap-1 mt-1">
-              <TrendingUp className="w-3 h-3" /> Includes {orders.length} in progress
+            <span className="text-[10px] text-gray-400 font-semibold block mt-1">
+              Total orders received
             </span>
           </div>
         </div>
@@ -482,17 +499,6 @@ export default function AdminDashboard({
 
           </div>
 
-          <div className="bg-[#1B7A36]/5 rounded-2xl p-5 border border-[#1B7A36]/10 flex flex-col md:flex-row items-center gap-4">
-            <div className="p-3 bg-white text-[#1B7A36] rounded-xl shadow-xs">
-              <TrendingUp className="w-6 h-6" />
-            </div>
-            <div>
-              <h4 className="font-bold text-[#1B7A36] text-sm">Harvest Season Yield Optimization Active</h4>
-              <p className="text-xs text-slate-700 mt-0.5">
-                Our Alappuzha farm cluster reports higher coconut and mango crops this week. Standard organic margins have improved by 2.4%. Perfect timing for discount coupons!
-              </p>
-            </div>
-          </div>
         </div>
       )}
 

@@ -28,19 +28,20 @@ import {
   ChevronRight,
   MapPinned,
   Plus,
-  LogOut
+  LogOut,
+  Briefcase
 } from 'lucide-react';
 
 import SplashScreen from './components/SplashScreen';
 import Logo from './components/Logo';
 import ProductCard from './components/ProductCard';
 import AdminDashboard from './components/AdminDashboard';
-import { Product, CartItem, Order, AppTab } from './types';
+import { Product, CartItem, Order, AppTab, SavedAddress } from './types';
 import { CATEGORIES, INSTANT_OFFERS } from './data';
 import { useAuth } from './context/AuthContext';
 import { supabase } from './lib/supabase';
 import { calculateDelivery } from './lib/delivery';
-import { geocodeAddress } from './lib/geocode';
+import { geocodeAddress, geocodeStructured, formatAddressParts } from './lib/geocode';
 import { MAX_DELIVERY_KM, STORE_LOCATION } from './config/delivery';
 import AddressAutocomplete, { SelectedPlace } from './components/AddressAutocomplete';
 import {
@@ -53,6 +54,9 @@ import {
   createProduct,
   updateProduct,
   deleteProduct,
+  fetchSavedAddresses,
+  upsertSavedAddress,
+  deleteSavedAddress,
 } from './lib/queries';
 
 export default function App() {
@@ -76,7 +80,7 @@ export default function App() {
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedCategory, setSelectedCategory] = useState('All');
   const [showCheckoutSuccess, setShowCheckoutSuccess] = useState(false);
-  const [addressInput, setAddressInput] = useState('Mundakkal Heritage, Alappuzha, Kerala - 688011');
+  const [addressInput, setAddressInput] = useState('');
   const [promoCode, setPromoCode] = useState('');
   const [activePromoDiscount, setActivePromoDiscount] = useState(0);
   const [promoError, setPromoError] = useState('');
@@ -84,6 +88,12 @@ export default function App() {
 
   // Distance-based delivery charge (from the store location)
   const [landmark, setLandmark] = useState('');
+  // Structured manual address (used when the customer types instead of searching)
+  const [houseInput, setHouseInput] = useState('');
+  const [streetInput, setStreetInput] = useState('');
+  const [townInput, setTownInput] = useState('');
+  const [locatedVia, setLocatedVia] = useState<'address' | 'landmark' | 'town' | ''>('');
+  const [locatedPrecision, setLocatedPrecision] = useState<'exact' | 'approximate' | ''>('');
   const [deliveryLocation, setDeliveryLocation] = useState<{ lat: number; lng: number } | null>(null);
   const [deliveryDistanceKm, setDeliveryDistanceKm] = useState<number | null>(null);
   const [deliveryCharge, setDeliveryCharge] = useState<number | null>(null);
@@ -92,8 +102,11 @@ export default function App() {
   const [calcLoading, setCalcLoading] = useState(false);
   const [deliveryError, setDeliveryError] = useState('');
 
-  // Clock state for PWA simulator device status bar
-  const [currentTime, setCurrentTime] = useState('06:10 AM');
+  // Saved delivery addresses (Home / Office / custom) for the signed-in customer
+  const [savedAddresses, setSavedAddresses] = useState<SavedAddress[]>([]);
+  const [saveLabel, setSaveLabel] = useState('');
+  const [savingAddress, setSavingAddress] = useState(false);
+  const [addressBookError, setAddressBookError] = useState('');
 
   // Load products and the signed-in user's orders from Supabase.
   // Re-runs when the user changes (e.g. an admin signs in and should see all orders).
@@ -115,6 +128,27 @@ export default function App() {
     reloadData();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user?.id, isAdmin]);
+
+  // Saved addresses are per-user and only readable when signed in.
+  useEffect(() => {
+    if (!user?.id) {
+      setSavedAddresses([]);
+      return;
+    }
+    let cancelled = false;
+    fetchSavedAddresses()
+      .then((rows) => {
+        if (!cancelled) setSavedAddresses(rows);
+      })
+      .catch(() => {
+        // Non-fatal: the customer can still type an address as before. This also
+        // covers the case where supabase/saved-addresses.sql has not been run.
+        if (!cancelled) setSavedAddresses([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [user?.id]);
 
   // Lightweight orders-only refresh (used by the real-time subscription).
   const reloadOrders = async () => {
@@ -144,23 +178,6 @@ export default function App() {
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user?.id]);
-
-  // Keep a ticking clock inside the mobile simulator for high authenticity!
-  useEffect(() => {
-    const updateTime = () => {
-      const now = new Date();
-      let hours = now.getHours();
-      const minutes = now.getMinutes();
-      const ampm = hours >= 12 ? 'PM' : 'AM';
-      hours = hours % 12;
-      hours = hours ? hours : 12; // the hour '0' should be '12'
-      const minStr = minutes < 10 ? '0' + minutes : minutes;
-      setCurrentTime(`${hours}:${minStr} ${ampm}`);
-    };
-    updateTime();
-    const timer = setInterval(updateTime, 10000);
-    return () => clearInterval(timer);
-  }, []);
 
   // Cart operations
   const handleAddToCart = (product: Product) => {
@@ -287,6 +304,17 @@ export default function App() {
   const hasDeliveryZone = deliveryAvailable && deliveryCharge != null;
   const deliveryFee = hasDeliveryZone ? (deliveryCharge as number) : 0;
 
+  /**
+   * The customer's delivery address for display purposes — the one being used
+   * for this order, else their first saved address. Null when they have not
+   * given one yet, so callers hide the row instead of showing a placeholder.
+   */
+  const displayAddress = useMemo(() => {
+    const typed = addressInput.trim();
+    if (typed) return typed;
+    return savedAddresses[0]?.address?.trim() || null;
+  }, [addressInput, savedAddresses]);
+
   // Typing a new address invalidates the previously computed location/charge.
   const handleAddressTextChange = (text: string) => {
     setAddressInput(text);
@@ -299,8 +327,19 @@ export default function App() {
   };
 
   // Shared: given coordinates, compute distance + charge and update state.
-  const computeDeliveryForCoords = async (lat: number, lng: number) => {
+  // `located` describes how those coordinates were obtained; it is cleared for
+  // GPS / autocomplete / saved addresses, which are precise by construction.
+  const computeDeliveryForCoords = async (
+    lat: number,
+    lng: number,
+    located: { via: 'address' | 'landmark' | 'town' | ''; precision: 'exact' | 'approximate' | '' } = {
+      via: '',
+      precision: '',
+    }
+  ) => {
     setDeliveryLocation({ lat, lng });
+    setLocatedVia(located.via);
+    setLocatedPrecision(located.precision);
     setDeliveryError('');
     setCalcLoading(true);
     try {
@@ -330,6 +369,64 @@ export default function App() {
     await computeDeliveryForCoords(place.lat, place.lng);
   };
 
+  // Tapping a saved address fills the form and re-prices it. Coordinates are
+  // stored with the address, so this skips geocoding entirely when present.
+  const handleUseSavedAddress = async (saved: SavedAddress) => {
+    setAddressInput(saved.address);
+    setLandmark(saved.landmark || '');
+    setAddressBookError('');
+    if (saved.lat != null && saved.lng != null) {
+      await computeDeliveryForCoords(saved.lat, saved.lng);
+      return;
+    }
+    // Saved before coordinates were captured — fall back to geocoding the text.
+    setCalcLoading(true);
+    try {
+      const { lat, lng } = await geocodeAddress(saved.address);
+      await computeDeliveryForCoords(lat, lng);
+    } catch (e: any) {
+      setDeliveryError(e?.message || 'Could not locate that saved address.');
+      setCalcLoading(false);
+    }
+  };
+
+  // Store the currently-calculated address under a label (Home, Office, …).
+  const handleSaveAddress = async () => {
+    setAddressBookError('');
+    setSavingAddress(true);
+    try {
+      const saved = await upsertSavedAddress({
+        label: saveLabel,
+        address: addressInput,
+        landmark,
+        lat: deliveryLocation?.lat ?? null,
+        lng: deliveryLocation?.lng ?? null,
+      });
+      // Replace the same label in place; otherwise append.
+      setSavedAddresses((prev) => {
+        const rest = prev.filter((a) => a.id !== saved.id && a.label !== saved.label);
+        return [...rest, saved];
+      });
+      setSaveLabel('');
+    } catch (e: any) {
+      setAddressBookError(e?.message || 'Could not save this address.');
+    } finally {
+      setSavingAddress(false);
+    }
+  };
+
+  const handleDeleteSavedAddress = async (id: string) => {
+    setAddressBookError('');
+    const previous = savedAddresses;
+    setSavedAddresses((prev) => prev.filter((a) => a.id !== id)); // optimistic
+    try {
+      await deleteSavedAddress(id);
+    } catch (e: any) {
+      setSavedAddresses(previous); // roll back so the list matches the server
+      setAddressBookError(e?.message || 'Could not remove that address.');
+    }
+  };
+
   // Use the device's GPS (asks for location permission).
   const handleUseLocation = () => {
     if (!navigator.geolocation) {
@@ -354,18 +451,46 @@ export default function App() {
     );
   };
 
-  // Customer typed an address (+ landmark) and pressed Calculate → geocode it.
+  // Editing any manual field invalidates a previously calculated charge.
+  const handleManualFieldChange = (setter: (v: string) => void) => (value: string) => {
+    setter(value);
+    setDeliveryLocation(null);
+    setDeliveryAvailable(false);
+    setDeliveryCharge(null);
+    setDeliveryDistanceKm(null);
+    setDeliveryMethod('');
+    setLocatedVia('');
+    setLocatedPrecision('');
+    setDeliveryError('');
+  };
+
+  // Customer filled in the manual address fields and pressed Calculate.
   const handleGeocodeTyped = async () => {
-    const query = [addressInput, landmark].map((s) => s.trim()).filter(Boolean).join(', ');
-    if (!query) {
-      setDeliveryError('Enter your address or a nearby landmark first.');
+    if (!townInput.trim()) {
+      setDeliveryError('Enter your town or city so we can locate you.');
+      return;
+    }
+    if (!streetInput.trim() && !houseInput.trim() && !landmark.trim()) {
+      setDeliveryError('Add a street address or a nearby landmark.');
       return;
     }
     setDeliveryError('');
     setCalcLoading(true);
     try {
-      const { lat, lng } = await geocodeAddress(query);
-      await computeDeliveryForCoords(lat, lng);
+      const located = await geocodeStructured({
+        house: houseInput,
+        street: streetInput,
+        town: townInput,
+        landmark,
+      });
+      // Store the address as the customer wrote it (the geocoder's formatted
+      // string is often less useful to a delivery rider than the real details).
+      const typed = formatAddressParts({ house: houseInput, street: streetInput, town: townInput });
+      setAddressInput(landmark.trim() ? `${typed} (near ${landmark.trim()})` : typed);
+      await computeDeliveryForCoords(located.lat, located.lng, {
+        via: located.matchedOn,
+        precision: located.precision,
+      });
     } catch (e: any) {
       setDeliveryAvailable(false);
       setDeliveryCharge(null);
@@ -528,7 +653,7 @@ export default function App() {
           id="toggle-pwa-view"
         >
           <Smartphone className="w-3.5 h-3.5" />
-          <span>Blinkit App Mock</span>
+          <span>Phone Width</span>
         </button>
         <button
           onClick={() => setDisplayMode('full')}
@@ -599,22 +724,9 @@ export default function App() {
               </div>
             </div>
 
-            {/* ACTUAL SIMULATED SMARTPHONE FRAME */}
+            {/* APP FRAME — on desktop this is styled as a phone-width column */}
             <div className="w-full max-w-md lg:h-[840px] bg-white rounded-none lg:rounded-[44px] shadow-2xl overflow-hidden border-0 lg:border-[12px] lg:border-[#1E293B] flex flex-col relative">
-              {/* Device Status Bar */}
-              <div className="bg-[#1B7A36] text-white px-6 pt-3 pb-2.5 flex justify-between items-center text-xs font-bold font-mono">
-                <span className="text-[11px]">{currentTime}</span>
-                {/* Simulated Speaker Notch */}
-                <div className="hidden lg:block absolute left-1/2 transform -translate-x-1/2 top-4 w-28 h-4 bg-[#1E293B] rounded-full z-20" />
-                <div className="flex items-center gap-1.5">
-                  <span className="text-[10px]">5G</span>
-                  <div className="w-5 h-2.5 border border-white rounded-xs p-0.5 flex">
-                    <div className="h-full w-4 bg-white rounded-xs" />
-                  </div>
-                </div>
-              </div>
-
-              {/* SIMULATED PHONE VIEWPORT SCROLLER */}
+              {/* SCROLLING CONTENT */}
               <div className="flex-1 overflow-y-auto bg-brand-bg flex flex-col relative pb-20">
                 {renderTabContent()}
               </div>
@@ -632,14 +744,13 @@ export default function App() {
               <Logo size="sm" showText={true} />
               
               <div className="flex items-center gap-4 text-xs font-bold">
-                <div className="flex items-center gap-1 bg-[#1B7A36]/5 text-[#1B7A36] px-3 py-1.5 rounded-xl">
-                  <MapPin className="w-3.5 h-3.5" />
-                  <span>Delivering to Alappuzha, KL</span>
-                </div>
-                
-                <span className="text-gray-300">|</span>
-                
-                <p className="text-gray-500 font-mono">Mock Platform Session</p>
+                {/* Only shown once the customer has actually given an address */}
+                {displayAddress && (
+                  <div className="flex items-center gap-1 bg-[#1B7A36]/5 text-[#1B7A36] px-3 py-1.5 rounded-xl max-w-xs">
+                    <MapPin className="w-3.5 h-3.5 shrink-0" />
+                    <span className="truncate" title={displayAddress}>Delivering to {displayAddress}</span>
+                  </div>
+                )}
               </div>
             </header>
 
@@ -689,19 +800,20 @@ export default function App() {
                 <span className="text-[10px] text-[#D9AB3B] font-semibold uppercase tracking-wide block">Harvest Order Seeded!</span>
                 <h3 className="text-xl font-bold text-gray-900 mt-1">Order Placed Successfully</h3>
                 <p className="text-xs text-gray-500 mt-1.5 leading-relaxed">
-                  Excellent choice! The local Alappuzha farmer cluster has received your order request. Your organic crops are currently being plucked and packed in Palm fibers.
+                  Thank you! We have received your order and are packing it now. You can follow its
+                  progress under Orders.
                 </p>
               </div>
 
               {/* Brief invoice info */}
               <div className="w-full bg-gray-50 rounded-2xl p-3 border border-gray-100 text-xs text-left text-gray-700 space-y-1">
                 <div className="flex justify-between">
-                  <span className="text-gray-400">Merchant Code:</span>
-                  <span className="font-mono font-bold">FD-ALAPPUZHA</span>
+                  <span className="text-gray-400">Order number:</span>
+                  <span className="font-mono font-bold">{orders[0]?.orderNumber || '—'}</span>
                 </div>
                 <div className="flex justify-between">
-                  <span className="text-gray-400">ETA standard:</span>
-                  <span className="font-bold text-[#1B7A36]" style={{ color: '#1B7A36' }}>32 mins Kerala Express</span>
+                  <span className="text-gray-400">Estimated delivery:</span>
+                  <span className="font-bold text-[#1B7A36]" style={{ color: '#1B7A36' }}>{orders[0]?.deliveryETA || '—'}</span>
                 </div>
               </div>
 
@@ -916,20 +1028,35 @@ export default function App() {
 
           {/* Location details badge & App header */}
           <div className="flex justify-between items-center relative z-10">
-            <div className="flex items-center gap-2">
-              <div className="p-2 bg-white/10 rounded-xl">
-                <MapPin className="w-5 h-5 text-amber-300" />
+            {/* Shown only once the customer has given a delivery address */}
+            {displayAddress ? (
+              <div className="flex items-center gap-2 min-w-0">
+                <div className="p-2 bg-white/10 rounded-xl shrink-0">
+                  <MapPin className="w-5 h-5 text-amber-300" />
+                </div>
+                <div className="text-left min-w-0">
+                  <span className="text-[9px] uppercase tracking-wide text-white/80 font-semibold block">Delivering to:</span>
+                  <span className="text-xs font-bold truncate max-w-[190px] block" title={displayAddress}>
+                    {displayAddress}
+                  </span>
+                </div>
               </div>
-              <div className="text-left">
-                <span className="text-[9px] uppercase tracking-wide text-white/80 font-semibold block">Express delivery to:</span>
-                <span className="text-xs font-bold truncate max-w-[190px] block">Alappuzha Backwaters, KL</span>
+            ) : (
+              <div className="flex items-center gap-2 min-w-0">
+                <div className="p-2 bg-white/10 rounded-xl shrink-0">
+                  <MapPin className="w-5 h-5 text-amber-300" />
+                </div>
+                <div className="text-left min-w-0">
+                  <span className="text-[9px] uppercase tracking-wide text-white/80 font-semibold block">Delivering from</span>
+                  <span className="text-xs font-bold truncate max-w-[190px] block">{STORE_LOCATION.label}</span>
+                </div>
               </div>
-            </div>
+            )}
 
-            {/* Quick Micro Badge */}
-            <div className="bg-white text-[#1B7A36] font-bold text-[9px] uppercase px-2.5 py-1 rounded-full shadow-md flex items-center gap-1">
+            {/* Serviceable radius — a real fact rather than a fixed time claim */}
+            <div className="bg-white text-[#1B7A36] font-bold text-[9px] uppercase px-2.5 py-1 rounded-full shadow-md flex items-center gap-1 shrink-0">
               <Sparkles className="w-3 h-3 fill-current" />
-              <span>32 Min Express</span>
+              <span>Within {MAX_DELIVERY_KM} km</span>
             </div>
           </div>
 
@@ -1211,6 +1338,47 @@ export default function App() {
                   <span className="text-xs font-semibold text-[#222222] uppercase tracking-wide">Delivery Location</span>
                 </div>
 
+                {/* SAVED ADDRESSES — tap one to deliver there instead of retyping */}
+                {savedAddresses.length > 0 && (
+                  <div className="space-y-1.5">
+                    <span className="text-[9px] text-gray-400 uppercase tracking-wide block">Deliver to a saved address</span>
+                    <div className="flex flex-wrap gap-1.5">
+                      {savedAddresses.map((saved) => {
+                        const isOffice = /office|work/i.test(saved.label);
+                        return (
+                          <div
+                            key={saved.id}
+                            className="group flex items-center gap-1 bg-gray-50 border border-gray-200 hover:border-[#1B7A36]/40 rounded-xl pl-2 pr-1 py-1.5 transition-all"
+                          >
+                            <button
+                              onClick={() => handleUseSavedAddress(saved)}
+                              disabled={calcLoading}
+                              className="flex items-center gap-1.5 cursor-pointer disabled:opacity-60 max-w-[150px]"
+                              title={saved.address}
+                              id={`saved-address-${saved.id}`}
+                            >
+                              {isOffice ? (
+                                <Briefcase className="w-3 h-3 text-[#1B7A36] shrink-0" />
+                              ) : (
+                                <HomeIcon className="w-3 h-3 text-[#1B7A36] shrink-0" />
+                              )}
+                              <span className="text-[10px] font-semibold text-[#222222] truncate">{saved.label}</span>
+                            </button>
+                            <button
+                              onClick={() => handleDeleteSavedAddress(saved.id)}
+                              className="p-0.5 rounded-md hover:bg-red-50 cursor-pointer"
+                              aria-label={`Remove saved address ${saved.label}`}
+                              id={`delete-saved-address-${saved.id}`}
+                            >
+                              <Trash2 className="w-3 h-3 text-gray-300 group-hover:text-red-400" />
+                            </button>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
+
                 <button
                   onClick={handleUseLocation}
                   disabled={calcLoading}
@@ -1230,29 +1398,64 @@ export default function App() {
                   value={addressInput}
                   onChange={handleAddressTextChange}
                   onSelect={handleSelectAddress}
-                  placeholder="House / street / area…"
+                  placeholder="Search your address…"
                   id="delivery-address-input"
                 />
 
-                {/* Optional landmark to improve geocoding accuracy */}
-                <div className="flex gap-2">
+                <div className="flex items-center gap-2">
+                  <div className="flex-1 h-px bg-gray-100" />
+                  <span className="text-[9px] text-gray-400 uppercase tracking-wide">or type it in</span>
+                  <div className="flex-1 h-px bg-gray-100" />
+                </div>
+
+                {/* MANUAL ADDRESS — structured so the geocoder gets clean signals */}
+                <div className="space-y-2">
                   <input
                     type="text"
-                    value={landmark}
-                    onChange={(e) => setLandmark(e.target.value)}
-                    placeholder="Nearby landmark (optional)"
-                    className="flex-1 text-xs font-medium bg-gray-50 border border-gray-200 focus:border-[#1B7A36] focus:ring-1 focus:ring-[#1B7A36] rounded-xl p-2.5 outline-hidden"
-                    id="delivery-landmark-input"
+                    value={houseInput}
+                    onChange={(e) => handleManualFieldChange(setHouseInput)(e.target.value)}
+                    placeholder="House / flat / building name"
+                    className="w-full text-xs font-medium bg-gray-50 border border-gray-200 focus:border-[#1B7A36] focus:ring-1 focus:ring-[#1B7A36] rounded-xl p-2.5 outline-hidden"
+                    id="delivery-house-input"
                   />
-                  <button
-                    onClick={handleGeocodeTyped}
-                    disabled={calcLoading}
-                    className="px-3 py-2 text-white text-[11px] font-semibold uppercase tracking-wide rounded-xl cursor-pointer active:scale-95 transition-all disabled:opacity-60 flex items-center gap-1.5"
-                    style={{ backgroundColor: '#1B7A36' }}
-                    id="calc-distance-btn"
-                  >
-                    <MapPin className="w-3.5 h-3.5" /> Calculate
-                  </button>
+                  <input
+                    type="text"
+                    value={streetInput}
+                    onChange={(e) => handleManualFieldChange(setStreetInput)(e.target.value)}
+                    placeholder="Street / road / area"
+                    className="w-full text-xs font-medium bg-gray-50 border border-gray-200 focus:border-[#1B7A36] focus:ring-1 focus:ring-[#1B7A36] rounded-xl p-2.5 outline-hidden"
+                    id="delivery-street-input"
+                  />
+                  <input
+                    type="text"
+                    value={townInput}
+                    onChange={(e) => handleManualFieldChange(setTownInput)(e.target.value)}
+                    placeholder="Town / city"
+                    className="w-full text-xs font-medium bg-gray-50 border border-gray-200 focus:border-[#1B7A36] focus:ring-1 focus:ring-[#1B7A36] rounded-xl p-2.5 outline-hidden"
+                    id="delivery-town-input"
+                  />
+                  <div className="flex gap-2">
+                    <input
+                      type="text"
+                      value={landmark}
+                      onChange={(e) => handleManualFieldChange(setLandmark)(e.target.value)}
+                      placeholder="Nearby landmark (optional)"
+                      className="flex-1 min-w-0 text-xs font-medium bg-gray-50 border border-gray-200 focus:border-[#1B7A36] focus:ring-1 focus:ring-[#1B7A36] rounded-xl p-2.5 outline-hidden"
+                      id="delivery-landmark-input"
+                    />
+                    <button
+                      onClick={handleGeocodeTyped}
+                      disabled={calcLoading}
+                      className="px-3 py-2 text-white text-[11px] font-semibold uppercase tracking-wide rounded-xl cursor-pointer active:scale-95 transition-all disabled:opacity-60 flex items-center gap-1.5 shrink-0"
+                      style={{ backgroundColor: '#1B7A36' }}
+                      id="calc-distance-btn"
+                    >
+                      <MapPin className="w-3.5 h-3.5" /> Calculate
+                    </button>
+                  </div>
+                  <span className="text-[9px] text-gray-400 block leading-relaxed">
+                    A landmark helps us find you when the street address alone is not on the map.
+                  </span>
                 </div>
 
                 {calcLoading && (
@@ -1264,16 +1467,74 @@ export default function App() {
 
                 {/* Result: distance + charge */}
                 {!calcLoading && hasDeliveryZone && deliveryDistanceKm != null && (
-                  <div className="flex items-center justify-between bg-emerald-50 border border-emerald-100 rounded-xl px-3 py-2">
-                    <span className="text-[11px] font-semibold text-emerald-700 flex items-center gap-1.5">
-                      <MapPin className="w-3.5 h-3.5" />
-                      {deliveryDistanceKm} km {deliveryMethod === 'straight-line' ? '(approx)' : ''}
-                    </span>
-                    <span className="text-xs font-bold text-[#1B7A36]">₹{deliveryCharge} delivery</span>
+                  <div className="space-y-1.5">
+                    <div className="flex items-center justify-between bg-emerald-50 border border-emerald-100 rounded-xl px-3 py-2">
+                      <span className="text-[11px] font-semibold text-emerald-700 flex items-center gap-1.5">
+                        <MapPin className="w-3.5 h-3.5" />
+                        {deliveryDistanceKm} km {deliveryMethod === 'straight-line' ? '(approx)' : ''}
+                      </span>
+                      <span className="text-xs font-bold text-[#1B7A36]">₹{deliveryCharge} delivery</span>
+                    </div>
+
+                    {/* Say which part of the address placed them, and warn when vague */}
+                    {locatedVia === 'landmark' && (
+                      <p className="text-[10px] text-gray-500 font-medium">
+                        Located using your landmark — “{landmark.trim()}”.
+                      </p>
+                    )}
+                    {(locatedPrecision === 'approximate' || locatedVia === 'town') && (
+                      <p className="text-[10px] text-amber-600 font-semibold leading-relaxed">
+                        We could only place you near the centre of {townInput.trim() || 'your town'}, so
+                        this charge is an estimate. Add a landmark for an accurate one.
+                      </p>
+                    )}
                   </div>
                 )}
 
                 {deliveryError && <p className="text-[10px] text-red-500 font-semibold">{deliveryError}</p>}
+
+                {/* SAVE THIS ADDRESS — only once we have a located address to store */}
+                {user && deliveryLocation && addressInput.trim() && (
+                  <div className="pt-1 border-t border-gray-100 space-y-1.5">
+                    <span className="text-[9px] text-gray-400 uppercase tracking-wide block">Save this address for next time</span>
+                    <div className="flex gap-1.5">
+                      {['Home', 'Office'].map((preset) => (
+                        <button
+                          key={preset}
+                          onClick={() => setSaveLabel(preset)}
+                          className={`px-2.5 py-1.5 rounded-lg text-[10px] font-semibold border transition-all cursor-pointer ${
+                            saveLabel === preset
+                              ? 'bg-[#1B7A36]/10 border-[#1B7A36]/40 text-[#1B7A36]'
+                              : 'bg-gray-50 border-gray-200 text-gray-500 hover:border-gray-300'
+                          }`}
+                          id={`save-label-preset-${preset.toLowerCase()}`}
+                        >
+                          {preset}
+                        </button>
+                      ))}
+                      <input
+                        type="text"
+                        value={saveLabel}
+                        onChange={(e) => setSaveLabel(e.target.value)}
+                        placeholder="or a name…"
+                        maxLength={24}
+                        className="flex-1 min-w-0 text-[11px] font-medium bg-gray-50 border border-gray-200 focus:border-[#1B7A36] focus:ring-1 focus:ring-[#1B7A36] rounded-lg px-2 py-1.5 outline-hidden"
+                        id="save-address-label-input"
+                      />
+                      <button
+                        onClick={handleSaveAddress}
+                        disabled={savingAddress || !saveLabel.trim()}
+                        className="px-2.5 py-1.5 bg-[#1B7A36] text-white text-[10px] font-semibold uppercase tracking-wide rounded-lg cursor-pointer active:scale-95 transition-all disabled:opacity-40 disabled:cursor-not-allowed shrink-0"
+                        id="save-address-btn"
+                      >
+                        {savingAddress ? 'Saving…' : 'Save'}
+                      </button>
+                    </div>
+                    {addressBookError && (
+                      <p className="text-[10px] text-red-500 font-semibold">{addressBookError}</p>
+                    )}
+                  </div>
+                )}
 
                 <span className="text-[9px] text-gray-400 block">
                   Delivery is charged by road distance from {STORE_LOCATION.label} • up to {MAX_DELIVERY_KM} km
@@ -1518,11 +1779,6 @@ export default function App() {
                     <span className="underline font-bold text-[10px] uppercase tracking-wide cursor-help">Need Help?</span>
                   </div>
 
-                  {/* Live note that the status is synchronized with the Admin Dashboard */}
-                  <div className="text-[9px] text-[#D9AB3B] font-semibold flex justify-center uppercase tracking-wide">
-                    🔄 live mock sync: simulate delivery stages in profile ➜ admin panel
-                  </div>
-
                 </div>
               );
             })}
@@ -1560,30 +1816,36 @@ export default function App() {
           </div>
         </div>
 
-        {/* Saved Addresses and Settings */}
-        <div className="bg-white rounded-2xl border border-gray-100 p-4 shadow-3xs space-y-3.5 text-xs text-left">
-          <div className="flex items-center justify-between">
-            <span className="text-[10px] font-semibold text-gray-400 uppercase tracking-wide">Account Data Structure</span>
-            <span className="text-[9px] text-[#1B7A36] font-bold">Kerala Express Ring Verified</span>
+        {/* Saved delivery addresses — hidden entirely until the customer has one */}
+        {savedAddresses.length > 0 && (
+          <div className="bg-white rounded-2xl border border-gray-100 p-4 shadow-3xs space-y-3.5 text-xs text-left">
+            <span className="text-[10px] font-semibold text-gray-400 uppercase tracking-wide block">
+              Saved Addresses
+            </span>
+
+            <div className="space-y-2.5">
+              {savedAddresses.map((saved) => (
+                <div key={saved.id} className="flex justify-between items-start gap-3 py-1.5 border-b border-gray-50 last:border-0">
+                  <span className="text-gray-500 shrink-0 flex items-center gap-1.5">
+                    {/office|work/i.test(saved.label) ? (
+                      <Briefcase className="w-3 h-3 text-[#1B7A36]" />
+                    ) : (
+                      <HomeIcon className="w-3 h-3 text-[#1B7A36]" />
+                    )}
+                    {saved.label}
+                  </span>
+                  <span className="font-semibold text-gray-900 text-right line-clamp-2 max-w-[190px]">
+                    {saved.address}
+                  </span>
+                </div>
+              ))}
+            </div>
+
+            <span className="text-[10px] text-gray-400 block">
+              Add or remove addresses from the delivery section at checkout.
+            </span>
           </div>
-
-          <div className="space-y-2.5">
-            <div className="flex justify-between items-center py-1.5 border-b border-gray-50">
-              <span className="text-gray-500">Express Delivery Wallet:</span>
-              <span className="font-semibold text-gray-900">₹450.00</span>
-            </div>
-
-            <div className="flex justify-between items-center py-1.5 border-b border-gray-50">
-              <span className="text-gray-500">Default Drop Location:</span>
-              <span className="font-bold text-gray-900 line-clamp-1 max-w-[190px]">Alappuzha, KL</span>
-            </div>
-
-            <div className="flex justify-between items-center py-1.5">
-              <span className="text-gray-500">Member ID:</span>
-              <span className="font-mono font-bold text-gray-600">FD-CLIENT-7294</span>
-            </div>
-          </div>
-        </div>
+        )}
 
         {/* Interactive App Preferences */}
         <div className="bg-white rounded-2xl border border-gray-100 p-4 shadow-3xs text-xs space-y-3.5 text-left">
@@ -1591,8 +1853,8 @@ export default function App() {
           
           <div className="flex justify-between items-center py-1.5 border-b border-gray-50">
             <div>
-              <span className="font-bold text-gray-900 block">Responsive Mode</span>
-              <span className="text-[10px] text-gray-500">Toggle mobile app simulator frame</span>
+              <span className="font-bold text-gray-900 block">Layout</span>
+              <span className="text-[10px] text-gray-500">Switch between phone width and full screen</span>
             </div>
             
             <button

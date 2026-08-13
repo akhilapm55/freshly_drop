@@ -29,13 +29,18 @@ export const STORE_LOCATION: LatLng & { label: string } = {
 /**
  * Distance pricing slabs, ascending by maxKm. A distance falls into the first
  * slab whose maxKm it does not exceed. Beyond the last slab → delivery unavailable.
+ *
+ * NOTE: distances are measured along ROADS (see src/lib/delivery.ts), not
+ * straight-line, so a customer 2 km away on the map typically measures ~2.5-3 km
+ * here. These bounds are widened accordingly — pick them by road distance, not
+ * by how far the pin looks on a map.
  */
 export const DELIVERY_SLABS: DeliverySlab[] = [
-  { maxKm: 2, charge: 20 },
-  { maxKm: 4, charge: 30 },
-  { maxKm: 6, charge: 40 },
-  { maxKm: 8, charge: 50 },
-  { maxKm: 10, charge: 70 },
+  { maxKm: 3, charge: 20 },
+  { maxKm: 5, charge: 30 },
+  { maxKm: 7, charge: 40 },
+  { maxKm: 9, charge: 50 },
+  { maxKm: 12, charge: 70 },
 ];
 
 /** Maximum serviceable distance — derived from the last slab. */

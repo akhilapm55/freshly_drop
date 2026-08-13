@@ -270,10 +270,6 @@ export default function ProductCard({
                       <span className="text-gray-500">Cultivation:</span>
                       <span className="font-semibold text-[#1B7A36]" style={{ color: '#1B7A36' }}>100% Organic certified</span>
                     </div>
-                    <div className="flex justify-between">
-                      <span className="text-gray-500">Source:</span>
-                      <span className="font-semibold text-gray-900">Alappuzha Farm Cooperatives, Kerala</span>
-                    </div>
                   </div>
                 </div>
 

@@ -24,6 +24,8 @@ export interface Order {
   tax: number;
   total: number;
   date: string;
+  /** Raw ISO timestamp — `date` is display-formatted and cannot be grouped by. */
+  createdAt: string;
   status: 'Order Placed' | 'Picked Up' | 'Packing' | 'Out for Delivery' | 'Delivered';
   address: string;
   deliveryETA: string;
@@ -31,6 +33,16 @@ export interface Order {
   deliveryLat?: number | null;
   deliveryLng?: number | null;
   deliveryDistanceKm?: number | null;
+}
+
+/** A delivery address a customer has saved for reuse (Home, Office, …). */
+export interface SavedAddress {
+  id: string;
+  label: string;
+  address: string;
+  landmark?: string | null;
+  lat?: number | null;
+  lng?: number | null;
 }
 
 export interface Review {
