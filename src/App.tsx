@@ -42,7 +42,9 @@ import { useAuth } from './context/AuthContext';
 import { supabase } from './lib/supabase';
 import { calculateDelivery } from './lib/delivery';
 import { geocodeAddress, geocodeStructured, formatAddressParts } from './lib/geocode';
-import { MAX_DELIVERY_KM, STORE_LOCATION } from './config/delivery';
+import { MAX_DELIVERY_KM, STORE_LOCATION, DELIVERY_ETA_TEXT } from './config/delivery';
+import { isUpiEnabled, UPI } from './config/payment';
+import { buildUpiUri, buildUpiQrDataUrl, isPlausibleUpiReference } from './lib/upi';
 import AddressAutocomplete, { SelectedPlace } from './components/AddressAutocomplete';
 import {
   fetchProducts,
@@ -57,6 +59,8 @@ import {
   fetchSavedAddresses,
   upsertSavedAddress,
   deleteSavedAddress,
+  submitPaymentReference,
+  setPaymentStatus,
 } from './lib/queries';
 
 export default function App() {
@@ -101,6 +105,16 @@ export default function App() {
   const [deliveryMethod, setDeliveryMethod] = useState<'driving' | 'straight-line' | ''>('');
   const [calcLoading, setCalcLoading] = useState(false);
   const [deliveryError, setDeliveryError] = useState('');
+
+  // Payment: how the customer chose to pay, and the UPI follow-up state
+  const [paymentMethod, setPaymentMethod] = useState<'cod' | 'upi'>('cod');
+  const [placedOrder, setPlacedOrder] = useState<Order | null>(null);
+  const [upiUri, setUpiUri] = useState('');
+  const [upiQr, setUpiQr] = useState('');
+  const [paymentRefInput, setPaymentRefInput] = useState('');
+  const [submittingRef, setSubmittingRef] = useState(false);
+  const [paymentRefDone, setPaymentRefDone] = useState(false);
+  const [paymentError, setPaymentError] = useState('');
 
   // Saved delivery addresses (Home / Office / custom) for the signed-in customer
   const [savedAddresses, setSavedAddresses] = useState<SavedAddress[]>([]);
@@ -571,6 +585,45 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [subtotal]);
 
+  /** Admin confirms (or rejects) a payment after checking their bank/GPay app. */
+  const handleSetPaymentStatus = async (orderId: string, status: Order['paymentStatus']) => {
+    try {
+      await setPaymentStatus(orderId, status);
+      await reloadOrders();
+    } catch (e: any) {
+      setDataError(e?.message || 'Could not update the payment status.');
+    }
+  };
+
+  /**
+   * Customer reports the UPI reference (UTR) from their payment app.
+   * This only records a CLAIM — the order stays unverified until an admin has
+   * seen the money arrive, because a UPI deep link gives the site no callback.
+   */
+  const handleSubmitPaymentRef = async () => {
+    if (!placedOrder) return;
+    const ref = paymentRefInput.trim();
+    if (!isPlausibleUpiReference(ref)) {
+      setPaymentError('Enter the reference / UTR number shown in your payment app.');
+      return;
+    }
+    setPaymentError('');
+    setSubmittingRef(true);
+    try {
+      const applied = await submitPaymentReference(placedOrder.id, ref);
+      if (!applied) {
+        setPaymentError('This order has already been verified, or is no longer awaiting payment.');
+        return;
+      }
+      setPaymentRefDone(true);
+      await reloadOrders();
+    } catch (e: any) {
+      setPaymentError(e?.message || 'Could not save that reference. Please try again.');
+    } finally {
+      setSubmittingRef(false);
+    }
+  };
+
   // Final confirmation of Checkout — writes the order to Supabase.
   // A database trigger (deduct_stock_on_order) reduces product stock atomically.
   const handlePlaceOrder = async () => {
@@ -583,7 +636,7 @@ export default function App() {
     setDataError('');
 
     try {
-      await createOrder({
+      const order = await createOrder({
         userId: user.id,
         items: cart,
         subtotal,
@@ -591,12 +644,35 @@ export default function App() {
         tax,
         total: grandTotal,
         address: addressInput,
-        deliveryETA: '32 mins (Kerala Farm Direct Express)',
+        deliveryETA: DELIVERY_ETA_TEXT,
         orderNumber: 'FD-' + Math.floor(100000 + Math.random() * 900000),
         deliveryLat: deliveryLocation?.lat ?? null,
         deliveryLng: deliveryLocation?.lng ?? null,
         deliveryDistanceKm: deliveryDistanceKm,
+        paymentMethod: isUpiEnabled ? paymentMethod : 'cod',
       });
+
+      setPlacedOrder(order);
+      setPaymentRefInput('');
+      setPaymentRefDone(false);
+      setPaymentError('');
+
+      // For UPI, prepare the deep link and a QR of the same URI (desktop has no
+      // handler for upi://, so the QR is the only way to pay from a computer).
+      if (isUpiEnabled && paymentMethod === 'upi') {
+        try {
+          const uri = buildUpiUri({ amount: order.total, orderNumber: order.orderNumber });
+          setUpiUri(uri);
+          setUpiQr(await buildUpiQrDataUrl(uri));
+        } catch (e: any) {
+          setUpiUri('');
+          setUpiQr('');
+          setPaymentError(e?.message || 'Could not prepare the UPI payment.');
+        }
+      } else {
+        setUpiUri('');
+        setUpiQr('');
+      }
 
       // Refresh orders + products (stock changed via the DB trigger)
       await reloadData();
@@ -815,7 +891,77 @@ export default function App() {
                   <span className="text-gray-400">Estimated delivery:</span>
                   <span className="font-bold text-[#1B7A36]" style={{ color: '#1B7A36' }}>{orders[0]?.deliveryETA || '—'}</span>
                 </div>
+                <div className="flex justify-between">
+                  <span className="text-gray-400">Amount:</span>
+                  <span className="font-bold">₹{placedOrder?.total ?? grandTotal}</span>
+                </div>
               </div>
+
+              {/* UPI PAYMENT STEP — deep link on mobile, QR on desktop */}
+              {placedOrder?.paymentMethod === 'upi' && upiUri && !paymentRefDone && (
+                <div className="w-full space-y-3 text-left">
+                  <a
+                    href={upiUri}
+                    className="w-full py-3 bg-[#1B7A36] text-white font-semibold text-xs uppercase tracking-wide rounded-xl shadow-md transition-all active:scale-95 cursor-pointer flex items-center justify-center gap-1.5"
+                    style={{ backgroundColor: '#1B7A36' }}
+                    id="upi-pay-now"
+                  >
+                    Pay ₹{placedOrder.total} with UPI
+                  </a>
+
+                  {upiQr && (
+                    <div className="flex flex-col items-center gap-1.5 pt-1">
+                      <span className="text-[10px] text-gray-400 text-center">
+                        On a computer? Scan this with GPay / PhonePe
+                      </span>
+                      <img src={upiQr} alt="UPI payment QR code" className="w-36 h-36 rounded-xl border border-gray-100" />
+                    </div>
+                  )}
+
+                  <div className="pt-1 border-t border-gray-100 space-y-1.5">
+                    <span className="text-[10px] font-semibold text-gray-600 block">
+                      Paid already? Enter the reference number
+                    </span>
+                    <div className="flex gap-1.5">
+                      <input
+                        type="text"
+                        value={paymentRefInput}
+                        onChange={(e) => setPaymentRefInput(e.target.value)}
+                        placeholder="UPI reference / UTR"
+                        className="flex-1 min-w-0 text-[11px] font-medium bg-gray-50 border border-gray-200 focus:border-[#1B7A36] focus:ring-1 focus:ring-[#1B7A36] rounded-lg px-2 py-2 outline-hidden"
+                        id="upi-reference-input"
+                      />
+                      <button
+                        onClick={handleSubmitPaymentRef}
+                        disabled={submittingRef || !paymentRefInput.trim()}
+                        className="px-3 py-2 bg-[#1B7A36] text-white text-[10px] font-semibold uppercase tracking-wide rounded-lg cursor-pointer active:scale-95 transition-all disabled:opacity-40 disabled:cursor-not-allowed shrink-0"
+                        id="upi-reference-submit"
+                      >
+                        {submittingRef ? 'Saving…' : 'Submit'}
+                      </button>
+                    </div>
+                    <p className="text-[9px] text-gray-400 leading-relaxed">
+                      We check every payment by hand before dispatch, so please send the reference.
+                    </p>
+                  </div>
+
+                  {paymentError && (
+                    <p className="text-[10px] text-red-500 font-semibold">{paymentError}</p>
+                  )}
+                </div>
+              )}
+
+              {/* Reference received — still not "paid" until an admin verifies */}
+              {placedOrder?.paymentMethod === 'upi' && paymentRefDone && (
+                <div className="w-full bg-emerald-50 border border-emerald-100 rounded-xl p-3 text-left">
+                  <span className="text-[11px] font-bold text-emerald-700 block">
+                    Reference received
+                  </span>
+                  <span className="text-[10px] text-emerald-600 leading-relaxed block mt-0.5">
+                    We will confirm your payment shortly and start packing your order.
+                  </span>
+                </div>
+              )}
 
               <button
                 onClick={() => {
@@ -1005,6 +1151,7 @@ export default function App() {
               onAddProduct={handleAddProduct}
               onUpdateProduct={handleEditProduct}
               onDeleteProduct={handleDeleteProduct}
+              onSetPaymentStatus={handleSetPaymentStatus}
               mode={isAdmin ? 'admin' : 'delivery'}
               currentUserId={user?.id ?? ''}
             />
@@ -1635,6 +1782,53 @@ export default function App() {
           )}
         </div>
 
+        {/* PAYMENT METHOD — always shown so the customer can see how they pay.
+            The UPI option appears once a VPA is set in src/config/payment.ts. */}
+        {cart.length > 0 && (
+          <div className="bg-white rounded-2xl p-4 border border-gray-100 shadow-3xs space-y-2.5 mt-4">
+            <span className="text-xs font-semibold text-[#222222] uppercase tracking-wide block">
+              Payment Method
+            </span>
+
+            {([
+              { key: 'cod' as const, title: 'Cash on Delivery', sub: 'Pay the rider when your order arrives' },
+              ...(isUpiEnabled
+                ? [{ key: 'upi' as const, title: 'UPI / GPay', sub: `Pay now to ${UPI.payeeName}` }]
+                : []),
+            ]).map((opt) => (
+              <button
+                key={opt.key}
+                onClick={() => setPaymentMethod(opt.key)}
+                className={`w-full flex items-center gap-3 p-3 rounded-xl border text-left transition-all cursor-pointer ${
+                  paymentMethod === opt.key
+                    ? 'bg-[#1B7A36]/5 border-[#1B7A36]/40'
+                    : 'bg-gray-50 border-gray-200 hover:border-gray-300'
+                }`}
+                id={`payment-method-${opt.key}`}
+              >
+                <span
+                  className={`w-4 h-4 rounded-full border-2 shrink-0 flex items-center justify-center ${
+                    paymentMethod === opt.key ? 'border-[#1B7A36]' : 'border-gray-300'
+                  }`}
+                >
+                  {paymentMethod === opt.key && <span className="w-2 h-2 rounded-full bg-[#1B7A36]" />}
+                </span>
+                <span className="min-w-0">
+                  <span className="text-xs font-bold text-[#222222] block">{opt.title}</span>
+                  <span className="text-[10px] text-gray-500 block">{opt.sub}</span>
+                </span>
+              </button>
+            ))}
+
+            {paymentMethod === 'upi' && (
+              <p className="text-[10px] text-gray-500 leading-relaxed">
+                After placing the order we will open your UPI app. Once paid, enter the reference
+                number so we can confirm it.
+              </p>
+            )}
+          </div>
+        )}
+
         {/* BOTTOM STICKY PLACE ORDER TRIGGER */}
         {cart.length > 0 && (
           <div className="pt-4 mt-auto">
@@ -1662,8 +1856,10 @@ export default function App() {
             {dataError && (
               <p className="text-[10px] text-center text-red-500 font-bold mt-2">{dataError}</p>
             )}
-            <p className="text-[9px] text-center text-gray-400 mt-2 font-mono">
-              🔒 Handshake Secured • Payment via CoD / Kerala UPI
+            <p className="text-[9px] text-center text-gray-400 mt-2">
+              {isUpiEnabled && paymentMethod === 'upi'
+                ? 'You will pay by UPI on the next step'
+                : 'Pay cash when your order is delivered'}
             </p>
           </div>
         )}

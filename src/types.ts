@@ -33,6 +33,13 @@ export interface Order {
   deliveryLat?: number | null;
   deliveryLng?: number | null;
   deliveryDistanceKm?: number | null;
+  /** How the customer chose to pay. */
+  paymentMethod: 'cod' | 'upi' | 'gateway';
+  /** 'submitted' is the customer's claim; only an admin sets 'paid'. */
+  paymentStatus: 'pending' | 'submitted' | 'paid' | 'failed';
+  /** UPI reference (UTR) supplied by the customer, or a gateway payment id. */
+  paymentRef?: string | null;
+  paidAt?: string | null;
 }
 
 /** A delivery address a customer has saved for reuse (Home, Office, …). */

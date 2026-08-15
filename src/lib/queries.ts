@@ -45,6 +45,11 @@ function mapOrder(row: any): Order {
     deliveryLat: row.delivery_lat != null ? Number(row.delivery_lat) : null,
     deliveryLng: row.delivery_lng != null ? Number(row.delivery_lng) : null,
     deliveryDistanceKm: row.delivery_distance_km != null ? Number(row.delivery_distance_km) : null,
+    // Defaults keep older rows (written before supabase/payments.sql) readable.
+    paymentMethod: (row.payment_method ?? 'cod') as Order['paymentMethod'],
+    paymentStatus: (row.payment_status ?? 'pending') as Order['paymentStatus'],
+    paymentRef: row.payment_ref ?? null,
+    paidAt: row.paid_at ?? null,
   };
 }
 
@@ -248,6 +253,7 @@ export interface NewOrderInput {
   deliveryLat?: number | null;
   deliveryLng?: number | null;
   deliveryDistanceKm?: number | null;
+  paymentMethod?: Order['paymentMethod'];
 }
 
 export async function createOrder(input: NewOrderInput): Promise<Order> {
@@ -267,11 +273,50 @@ export async function createOrder(input: NewOrderInput): Promise<Order> {
       delivery_lat: input.deliveryLat ?? null,
       delivery_lng: input.deliveryLng ?? null,
       delivery_distance_km: input.deliveryDistanceKm ?? null,
+      // Every order starts unpaid. UPI orders move to 'submitted' when the
+      // customer supplies a reference, and only an admin can mark them 'paid'.
+      payment_method: input.paymentMethod ?? 'cod',
+      payment_status: 'pending',
     })
     .select()
     .single();
   if (error) throw error;
   return mapOrder(data);
+}
+
+// ---- Payments --------------------------------------------------------------
+
+/**
+ * Customer attaches the UPI reference (UTR) shown in their payment app.
+ * Goes through a SECURITY DEFINER function rather than a direct update, so the
+ * customer cannot write payment_status = 'paid' or touch any other column.
+ * Returns false when the order was already verified or does not belong to them.
+ */
+export async function submitPaymentReference(orderId: string, reference: string): Promise<boolean> {
+  const { data, error } = await supabase.rpc('submit_payment_reference', {
+    order_id: orderId,
+    reference,
+  });
+  if (error) throw error;
+  return data === true;
+}
+
+/**
+ * Admin confirms the money actually arrived (or marks the claim failed).
+ * Guarded by RLS — only an admin's update passes the orders_update_admin policy.
+ */
+export async function setPaymentStatus(
+  orderId: string,
+  status: Order['paymentStatus']
+): Promise<void> {
+  const { error } = await supabase
+    .from('orders')
+    .update({
+      payment_status: status,
+      paid_at: status === 'paid' ? new Date().toISOString() : null,
+    })
+    .eq('id', orderId);
+  if (error) throw error;
 }
 
 export async function updateOrderStatus(orderId: string, status: Order['status']): Promise<void> {

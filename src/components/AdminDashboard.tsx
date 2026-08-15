@@ -53,6 +53,8 @@ interface AdminDashboardProps {
   onAddProduct: (product: Product) => Promise<void>;
   onUpdateProduct: (product: Product) => Promise<void>;
   onDeleteProduct: (productId: string) => void;
+  /** Confirm/reject a UPI payment after checking the money actually arrived. */
+  onSetPaymentStatus: (orderId: string, status: Order['paymentStatus']) => void;
   mode?: 'admin' | 'delivery'; // delivery = restricted fulfilment-only view
   currentUserId: string;       // to prevent an admin demoting their own account
 }
@@ -67,6 +69,7 @@ export default function AdminDashboard({
   onAddProduct,
   onUpdateProduct,
   onDeleteProduct,
+  onSetPaymentStatus,
   mode = 'admin',
   currentUserId,
 }: AdminDashboardProps) {
@@ -1031,6 +1034,63 @@ export default function AdminDashboard({
                 {/* Delivery Location */}
                 <div className="text-[11px] text-gray-500 bg-gray-50 p-2 rounded-lg leading-tight">
                   📍 <span className="font-medium text-gray-600">Address:</span> {order.address}
+                </div>
+
+                {/* PAYMENT — a UPI order is only 'paid' once YOU have seen the money.
+                    The customer's reference is a claim, never proof. */}
+                <div
+                  className={`text-[11px] p-2 rounded-lg leading-tight space-y-1.5 border ${
+                    order.paymentStatus === 'paid'
+                      ? 'bg-emerald-50 border-emerald-100'
+                      : order.paymentStatus === 'submitted'
+                      ? 'bg-amber-50 border-amber-200'
+                      : 'bg-gray-50 border-gray-100'
+                  }`}
+                >
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="font-medium text-gray-600">
+                      {order.paymentMethod === 'upi' ? '📲 UPI' : order.paymentMethod === 'gateway' ? '💳 Online' : '💵 Cash on delivery'}
+                    </span>
+                    <span
+                      className={`font-bold uppercase tracking-wide text-[9px] px-2 py-0.5 rounded-full ${
+                        order.paymentStatus === 'paid'
+                          ? 'bg-emerald-600 text-white'
+                          : order.paymentStatus === 'submitted'
+                          ? 'bg-amber-500 text-white'
+                          : order.paymentStatus === 'failed'
+                          ? 'bg-red-500 text-white'
+                          : 'bg-gray-300 text-gray-700'
+                      }`}
+                    >
+                      {order.paymentStatus === 'submitted' ? 'Needs checking' : order.paymentStatus}
+                    </span>
+                  </div>
+
+                  {order.paymentRef && (
+                    <div className="text-gray-600">
+                      Ref: <span className="font-mono font-bold select-all">{order.paymentRef}</span>
+                    </div>
+                  )}
+
+                  {/* Verification controls — admins only, and never for COD */}
+                  {mode === 'admin' && order.paymentMethod !== 'cod' && order.paymentStatus !== 'paid' && (
+                    <div className="flex items-center gap-1.5 pt-0.5">
+                      <button
+                        onClick={() => onSetPaymentStatus(order.id, 'paid')}
+                        className="px-2 py-1 bg-emerald-600 text-white text-[9px] font-bold uppercase tracking-wide rounded-md hover:brightness-110 cursor-pointer active:scale-95 transition-all"
+                        id={`confirm-payment-${order.id}`}
+                      >
+                        Money received
+                      </button>
+                      <button
+                        onClick={() => onSetPaymentStatus(order.id, 'failed')}
+                        className="px-2 py-1 bg-white border border-red-200 text-red-500 text-[9px] font-bold uppercase tracking-wide rounded-md hover:bg-red-50 cursor-pointer active:scale-95 transition-all"
+                        id={`reject-payment-${order.id}`}
+                      >
+                        Not received
+                      </button>
+                    </div>
+                  )}
                 </div>
 
                 {/* Action Buttons: Status stepper */}

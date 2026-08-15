@@ -48,3 +48,9 @@ export const MAX_DELIVERY_KM = DELIVERY_SLABS[DELIVERY_SLABS.length - 1].maxKm;
 
 /** Restrict address autocomplete/geocoding to this country (ISO code). */
 export const DELIVERY_COUNTRY = 'in';
+
+/**
+ * Delivery promise shown on an order. Keep this to something you can actually
+ * meet — it is displayed to the customer as the ETA and stored on the order.
+ */
+export const DELIVERY_ETA_TEXT = 'Same day, within 3 hours';
