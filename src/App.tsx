@@ -32,6 +32,7 @@ import {
   Briefcase
 } from 'lucide-react';
 
+import { createShopifyCart } from './lib/shopify';
 import SplashScreen from './components/SplashScreen';
 import Logo from './components/Logo';
 import ProductCard from './components/ProductCard';
@@ -449,8 +450,18 @@ export default function App() {
     }
     setDeliveryError('');
     setCalcLoading(true);
+    // navigator.geolocation.getCurrentPosition(
+    //   (pos) => {
+    //     computeDeliveryForCoords(pos.coords.latitude, pos.coords.longitude);
+    //   },
     navigator.geolocation.getCurrentPosition(
       (pos) => {
+        console.log('GPS coordinates:', {
+          latitude: pos.coords.latitude,
+          longitude: pos.coords.longitude,
+          accuracy: pos.coords.accuracy,
+        });
+
         computeDeliveryForCoords(pos.coords.latitude, pos.coords.longitude);
       },
       (err) => {
@@ -623,6 +634,39 @@ export default function App() {
       setSubmittingRef(false);
     }
   };
+
+const handleShopifyCheckout = async () => {
+  if (cart.length === 0 || isPlacingOrder) return;
+
+  if (!user) {
+    setDataError('Please log in before checkout.');
+    return;
+  }
+
+  setIsPlacingOrder(true);
+  setDataError('');
+
+  try {
+    const lines = cart.map((item: CartItem) => ({
+      merchandiseId: item.product.shopifyVariantId,
+      quantity: item.quantity,
+    }));
+
+const checkoutUrl = await createShopifyCart(lines, [
+  {
+    key: 'supabase_user_id',
+    value: user.id,
+  },
+]);
+    window.location.href = checkoutUrl;
+    
+  } catch (e: any) {
+    setDataError(
+      e?.message || 'Could not start Shopify checkout. Please try again.'
+    );
+    setIsPlacingOrder(false);
+  }
+};
 
   // Final confirmation of Checkout — writes the order to Supabase.
   // A database trigger (deduct_stock_on_order) reduces product stock atomically.
@@ -1833,7 +1877,7 @@ export default function App() {
         {cart.length > 0 && (
           <div className="pt-4 mt-auto">
             <button
-              onClick={handlePlaceOrder}
+              onClick={handleShopifyCheckout}
               disabled={isPlacingOrder || !hasDeliveryZone}
               className="w-full py-4 text-white hover:brightness-105 font-semibold text-xs uppercase tracking-wide rounded-2xl shadow-md transition-all active:scale-95 cursor-pointer flex items-center justify-center gap-2 disabled:opacity-70 disabled:cursor-not-allowed"
               style={{ backgroundColor: '#1B7A36' }}
