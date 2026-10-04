@@ -21,9 +21,9 @@ export interface DeliverySlab {
  * spot, and copy the "lat, lng".
  */
 export const STORE_LOCATION: LatLng & { label: string } = {
-  lat: 12.321829928791814,
-  lng: 75.08549817459456,
-  label: 'Parakku',
+  lat: 12.322076248391523,
+  lng: 75.08804090874067,
+  label: 'freshly drop',
 };
 
 /**
