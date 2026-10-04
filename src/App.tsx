@@ -359,6 +359,13 @@ export default function App() {
     setCalcLoading(true);
     try {
       const result = await calculateDelivery({ lat, lng });
+
+      console.log('FreshlyDrop delivery calculation:', {
+        distanceKm: result.distanceKm,
+        method: result.method,
+        charge: result.charge,
+      });
+      
       setDeliveryDistanceKm(result.distanceKm);
       setDeliveryCharge(result.charge);
       setDeliveryAvailable(result.available);

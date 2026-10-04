@@ -39,13 +39,13 @@ export const DELIVERY_SLABS: DeliverySlab[] = [
   { maxKm: 3, charge: 20 },
   { maxKm: 5, charge: 30 },
   { maxKm: 7, charge: 40 },
-  { maxKm: 9, charge: 50 },
-  { maxKm: 12, charge: 70 },
+  { maxKm: 10, charge: 50 },
 ];
 
-/** Maximum serviceable distance — derived from the last slab. */
-export const MAX_DELIVERY_KM = DELIVERY_SLABS[DELIVERY_SLABS.length - 1].maxKm;
 
+/** Maximum serviceable distance — derived from the last slab. */
+export const MAX_DELIVERY_KM =
+  DELIVERY_SLABS[DELIVERY_SLABS.length - 1].maxKm;
 /** Restrict address autocomplete/geocoding to this country (ISO code). */
 export const DELIVERY_COUNTRY = 'in';
 
