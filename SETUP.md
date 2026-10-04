@@ -26,9 +26,9 @@ get a fully working app with a real database and login.
    **`.env.local`**.
 2. Paste in your values:
 
-   ```
-   VITE_SUPABASE_URL=https://xxxxxxxx.supabase.co
-   VITE_SUPABASE_ANON_KEY=your-anon-public-key
+   ```   
+   VITE_SUPABASE_URL=https://chdduwxkhimwpefossmq.supabase.co/rest/v1/
+         VITE_SUPABASE_ANON_KEY=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImNoZGR1d3hraGltd3BlZm9zc21xIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODA0OTAyNjEsImV4cCI6MjA5NjA2NjI2MX0.XFTiTxqWbcjSpSDyXdeH0UdEIkIzNFzwBO3kmqkw-ZE
    ```
 
 3. Save the file.

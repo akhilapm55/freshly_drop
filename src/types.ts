@@ -1,5 +1,6 @@
 export interface Product {
   id: string;
+  shopifyVariantId: string;
   name: string;
   category: string;
   price: number;

@@ -9,18 +9,50 @@ import { Product, Order, CartItem, SavedAddress } from '../types';
 
 // ---- Mappers ---------------------------------------------------------------
 
-function mapProduct(row: any): Product {
+// function mapProduct(row: any): Product {
+//   return {
+//     id: row.id,
+//     name: row.name,
+//     category: row.category,
+//     price: Number(row.price),
+//     unit: row.unit,
+//     description: row.description,
+//     image: row.image,
+//     stock: Number(row.stock),
+//     rating: Number(row.rating),
+//     popular: Boolean(row.popular),
+//   };
+// }
+
+function mapShopifyProduct(node: any): Product {
+  const variant = node.variants?.nodes?.[0];
+
+  const getMetafieldValue = (key: string) => {
+    const metafield = node.metafields?.nodes?.find(
+      (item: any) =>
+        item.namespace === 'custom' && item.key === key
+    );
+
+    return metafield?.value ?? null;
+  };
+
+  const ratingValue = getMetafieldValue('rating');
+  const popularValue = getMetafieldValue('popular');
+  const unitValue = getMetafieldValue('unit');
+ 
+
   return {
-    id: row.id,
-    name: row.name,
-    category: row.category,
-    price: Number(row.price),
-    unit: row.unit,
-    description: row.description,
-    image: row.image,
-    stock: Number(row.stock),
-    rating: Number(row.rating),
-    popular: Boolean(row.popular),
+    id: node.id,
+    shopifyVariantId: variant?.id ?? '',
+    name: node.title,
+    category: node.productType || 'Fresh Produce',
+    price: Number(variant?.price ?? 0),
+    unit: unitValue ?? '',
+    description: node.description ?? '',
+    image: node.featuredImage?.url ?? '',
+    stock: Number(variant?.inventoryQuantity ?? 0),
+    rating: ratingValue !== null ? Number(ratingValue) : 0,
+    popular: popularValue === 'true',
   };
 }
 
@@ -55,13 +87,70 @@ function mapOrder(row: any): Order {
 
 // ---- Products --------------------------------------------------------------
 
+// export async function fetchProducts(): Promise<Product[]> {
+//   const { data, error } = await supabase
+//     .from('products')
+//     .select('*')
+//     .order('created_at', { ascending: true });
+//   if (error) throw error;
+//   return (data ?? []).map(mapProduct);
+// }
+
 export async function fetchProducts(): Promise<Product[]> {
-  const { data, error } = await supabase
-    .from('products')
-    .select('*')
-    .order('created_at', { ascending: true });
-  if (error) throw error;
-  return (data ?? []).map(mapProduct);
+  const query = `
+    {
+      products(first: 100) {
+        nodes {
+          id
+          title
+          productType
+          description
+          featuredImage {
+            url
+          }
+          metafields(first: 20) {
+            nodes {
+              namespace
+              key
+              value
+            }
+          }
+          variants(first: 10) {
+            nodes {
+              id
+              title
+              price
+              inventoryQuantity
+            }
+          }
+        }
+      }
+    }
+  `;
+
+  const response = await fetch(
+    `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/shopify-admin`,
+    {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        apikey: import.meta.env.VITE_SUPABASE_ANON_KEY,
+      },
+      body: JSON.stringify({ query }),
+    }
+  );
+
+  if (!response.ok) {
+    throw new Error(`Shopify request failed: ${response.status}`);
+  }
+
+  const result = await response.json();
+
+  if (result.errors?.length) {
+    throw new Error(result.errors[0].message);
+  }
+
+  return (result.data?.products?.nodes ?? []).map(mapShopifyProduct);
 }
 
 export async function updateProductStock(productId: string, newStock: number): Promise<void> {
