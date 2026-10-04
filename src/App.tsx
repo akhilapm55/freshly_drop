@@ -462,6 +462,16 @@ export default function App() {
     //     computeDeliveryForCoords(pos.coords.latitude, pos.coords.longitude);
     //   },
     navigator.geolocation.getCurrentPosition(
+      // (pos) => {
+      //   console.log('GPS coordinates:', {
+      //     latitude: pos.coords.latitude,
+      //     longitude: pos.coords.longitude,
+      //     accuracy: pos.coords.accuracy,
+      //   });
+
+      //   computeDeliveryForCoords(pos.coords.latitude, pos.coords.longitude);
+      // },
+
       (pos) => {
         console.log('GPS coordinates:', {
           latitude: pos.coords.latitude,
@@ -469,8 +479,12 @@ export default function App() {
           accuracy: pos.coords.accuracy,
         });
 
-        computeDeliveryForCoords(pos.coords.latitude, pos.coords.longitude);
+        computeDeliveryForCoords(
+          pos.coords.latitude,
+          pos.coords.longitude
+        );
       },
+
       (err) => {
         setCalcLoading(false);
         setDeliveryError(
