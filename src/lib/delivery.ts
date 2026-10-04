@@ -108,15 +108,24 @@ export async function calculateDelivery(
   let method: DistanceMethod = 'straight-line';
 
   // 1. Google driving distance (only if a Maps key is configured)
+  // if (isGoogleMapsEnabled) {
+  //   try {
+  //     distanceKm = await getDrivingDistanceKm(store, dest);
+  //     method = 'driving';
+  //   } catch {
+  //     /* fall through */
+  //   }
+  // }
   if (isGoogleMapsEnabled) {
     try {
       distanceKm = await getDrivingDistanceKm(store, dest);
       method = 'driving';
-    } catch {
-      /* fall through */
+
+      console.log('GOOGLE DRIVING DISTANCE:', distanceKm);
+    } catch (error) {
+      console.log('GOOGLE MAPS FAILED:', error);
     }
   }
-
   // 2. Free road distance via OSRM (no key needed)
   if (distanceKm === undefined) {
     try {
